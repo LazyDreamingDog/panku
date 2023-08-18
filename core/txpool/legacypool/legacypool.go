@@ -532,6 +532,10 @@ func (pool *LegacyPool) Pending(enforceTips bool) map[common.Address][]*types.Tr
 	return pending
 }
 
+func (pool *LegacyPool) IsLocalTx(tx *types.Transaction) bool {
+	return pool.locals.containsTx(tx)
+}
+
 // Locals retrieves the accounts currently considered local by the pool.
 func (pool *LegacyPool) Locals() []common.Address {
 	pool.mu.Lock()
@@ -554,6 +558,15 @@ func (pool *LegacyPool) local() map[common.Address]types.Transactions {
 		}
 	}
 	return txs
+}
+
+func (pool *LegacyPool) ValidateTx(tx *types.Transaction, local bool) error {
+	err := pool.validateTxBasics(tx, local)
+	if err != nil {
+		return err
+	}
+	err = pool.validateTx(tx, local)
+	return err
 }
 
 // validateTxBasics checks whether a transaction is valid according to the consensus
@@ -586,9 +599,9 @@ func (pool *LegacyPool) validateTx(tx *types.Transaction, local bool) error {
 		State: pool.currentState,
 
 		FirstNonceGap: nil, // Pool allows arbitrary arrival order, don't invalidate nonce gaps
-		ExistingExpenditure: func(addr common.Address, nonce uint64) *big.Int {
+		ExistingExpenditure: func(addr common.Address) *big.Int {
 			if list := pool.pending[addr]; list != nil {
-				return list.GetCost(nonce)
+				return list.totalcost
 			}
 			return new(big.Int)
 		},
@@ -709,7 +722,6 @@ func (pool *LegacyPool) add(tx *types.Transaction, local bool) (replaced bool, e
 			pool.priced.Removed(1)
 			pendingReplaceMeter.Mark(1)
 		}
-
 		pool.all.Add(tx, isLocal)
 		pool.priced.Put(tx, isLocal)
 		pool.journalTx(from, tx)
@@ -1372,7 +1384,7 @@ func (pool *LegacyPool) promoteExecutables(accounts []common.Address) []*types.T
 		queuedNofundsMeter.Mark(int64(len(drops)))
 
 		// Gather all executable transactions and promote them
-		readies := list.Ready(pool.pendingNonces.get(addr), pool.currentState.GetBalance(addr))
+		readies := list.Ready(pool.pendingNonces.get(addr))
 		for _, tx := range readies {
 			hash := tx.Hash()
 			if pool.promoteTx(addr, hash, tx) {
@@ -1568,6 +1580,7 @@ func (pool *LegacyPool) demoteUnexecutables() {
 			pool.all.Remove(hash)
 		}
 		pendingNofundsMeter.Mark(int64(len(drops)))
+
 		for _, tx := range invalids {
 			hash := tx.Hash()
 			log.Trace("Demoting pending transaction", "hash", hash)
@@ -1579,22 +1592,6 @@ func (pool *LegacyPool) demoteUnexecutables() {
 		if pool.locals.contains(addr) {
 			localGauge.Dec(int64(len(olds) + len(drops) + len(invalids)))
 		}
-
-		// if some future transactions using higher cost
-		// we should move them future transactions to queue
-		invailid := list.PopExceeds(pool.currentState.GetBalance(addr))
-		for _, tx := range invailid {
-			hash := tx.Hash()
-			log.Trace("Demoting pending transaction", "hash", hash)
-
-			// Internal shuffle shouldn't touch the lookup set.
-			pool.enqueueTx(hash, tx, false, false)
-		}
-		pendingGauge.Dec(int64(len(invailid)))
-		if pool.locals.contains(addr) {
-			localGauge.Dec(int64(len(invailid)))
-		}
-
 		// If there's a gap in front, alert (should never happen) and postpone all transactions
 		if list.Len() > 0 && list.txs.Get(nonce) == nil {
 			gapped := list.Cap(0)
@@ -1860,7 +1857,7 @@ func (t *lookup) RemoteToLocals(locals *accountSet) int {
 // RemotesBelowTip finds all remote transactions below the given tip threshold.
 func (t *lookup) RemotesBelowTip(threshold *big.Int) types.Transactions {
 	found := make(types.Transactions, 0, 128)
-	t.Range(func(_ common.Hash, tx *types.Transaction, _ bool) bool {
+	t.Range(func(hash common.Hash, tx *types.Transaction, local bool) bool {
 		if tx.GasTipCapIntCmp(threshold) < 0 {
 			found = append(found, tx)
 		}

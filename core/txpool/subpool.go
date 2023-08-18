@@ -108,4 +108,8 @@ type SubPool interface {
 	// Status returns the known status (unknown/pending/queued) of a transaction
 	// identified by their hashes.
 	Status(hash common.Hash) TxStatus
+
+	ValidateTx(tx *types.Transaction, local bool) error
+
+	IsLocalTx(tx *types.Transaction) bool
 }

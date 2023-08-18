@@ -244,7 +244,7 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, genesis *Genesis
 	// Setup the genesis block, commit the provided genesis specification
 	// to database if the genesis block is not present yet, or load the
 	// stored one from database.
-	chainConfig, genesisHash, genesisErr := SetupGenesisBlockWithOverride(db, triedb, genesis, overrides)
+	chainConfig, genesisHash, genesisErr := SetupGenesisBlockWithOverride(db, triedb, genesis, overrides) // !!! ERROR
 	if _, ok := genesisErr.(*params.ConfigCompatError); genesisErr != nil && !ok {
 		return nil, genesisErr
 	}
@@ -1492,10 +1492,8 @@ func (bc *BlockChain) addFutureBlock(block *types.Block) error {
 	return nil
 }
 
-// InsertChain attempts to insert the given batch of blocks in to the canonical
-// chain or, otherwise, create a fork. If an error is returned it will return
-// the index number of the failing block as well an error describing what went
-// wrong. After insertion is done, all accumulated events will be fired.
+// InsertChain尝试将给定的区块批次插入到主要的链中，或者创建一个分叉
+// 如果返回了错误，它会返回失败的区块的索引以及描述错误的错误信息。插入完成后，会触发所有积累的事件
 func (bc *BlockChain) InsertChain(chain types.Blocks) (int, error) {
 	// Sanity check that we have something meaningful to import
 	if len(chain) == 0 {
@@ -1524,7 +1522,7 @@ func (bc *BlockChain) InsertChain(chain types.Blocks) (int, error) {
 		return 0, errChainStopped
 	}
 	defer bc.chainmu.Unlock()
-	return bc.insertChain(chain, true)
+	return bc.insertChain(chain, true) // !!! ERROR
 }
 
 // insertChain is the internal implementation of InsertChain, which assumes that
@@ -1536,25 +1534,25 @@ func (bc *BlockChain) InsertChain(chain types.Blocks) (int, error) {
 // is imported, but then new canon-head is added before the actual sidechain
 // completes, then the historic state could be pruned again
 func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool) (int, error) {
-	// If the chain is terminating, don't even bother starting up.
+	// 如果链正在终止，则不要启动
 	if bc.insertStopped() {
 		return 0, nil
 	}
 
-	// Start a parallel signature recovery (signer will fluke on fork transition, minimal perf loss)
+	// 启动并行签名恢复（签署者在分叉过渡期间会碰巧出现，性能损失最小）
 	SenderCacher.RecoverFromBlocks(types.MakeSigner(bc.chainConfig, chain[0].Number(), chain[0].Time()), chain)
 
 	var (
 		stats     = insertStats{startTime: mclock.Now()}
 		lastCanon *types.Block
 	)
-	// Fire a single chain head event if we've progressed the chain
+	// 如果我们已经推进了链，则触发一个单独的链头事件
 	defer func() {
 		if lastCanon != nil && bc.CurrentBlock().Hash() == lastCanon.Hash() {
 			bc.chainHeadFeed.Send(ChainHeadEvent{lastCanon})
 		}
 	}()
-	// Start the parallel header verifier
+	// 启动并行头部验证器
 	headers := make([]*types.Header, len(chain))
 	for i, block := range chain {
 		headers[i] = block.Header()
@@ -1562,11 +1560,11 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool) (int, error)
 	abort, results := bc.engine.VerifyHeaders(bc, headers)
 	defer close(abort)
 
-	// Peek the error for the first block to decide the directing import logic
+	// 获取第一个区块的错误以决定导入逻辑的方向
 	it := newInsertIterator(chain, results, bc.validator)
 	block, err := it.next()
 
-	// Left-trim all the known blocks that don't need to build snapshot
+	// 对所有已知的区块进行左端修剪，不需要构建快照
 	if bc.skipBlock(err, it) {
 		// First block (and state) is known
 		//   1. We did a roll-back, and should now do a re-import
@@ -1614,13 +1612,13 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool) (int, error)
 
 			block, err = it.next()
 		}
-		// Falls through to the block import
+		// 直接跳到块导入
 	}
 	switch {
-	// First block is pruned
+	// 第一个块被修剪
 	case errors.Is(err, consensus.ErrPrunedAncestor):
 		if setHead {
-			// First block is pruned, insert as sidechain and reorg only if TD grows enough
+			// 第一个块被修剪，作为侧链插入，并且只有当TD增长足够时才进行重新排序
 			log.Debug("Pruned ancestor, inserting as sidechain", "number", block.Number(), "hash", block.Hash())
 			return bc.insertSideChain(block, it)
 		} else {
@@ -1749,9 +1747,9 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool) (int, error)
 			}
 		}
 
-		// Process block using the parent state as reference point
+		// 使用父状态作为参考点处理块
 		pstart := time.Now()
-		receipts, logs, usedGas, err := bc.processor.Process(block, statedb, bc.vmConfig)
+		receipts, logs, usedGas, err := bc.processor.Process(block, statedb, bc.vmConfig) // !!! ERROR TODO:
 		if err != nil {
 			bc.reportBlock(block, receipts, err)
 			followupInterrupt.Store(true)

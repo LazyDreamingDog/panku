@@ -1,4 +1,4 @@
-package txpool
+package core
 
 import (
 	"bytes"
@@ -62,7 +62,7 @@ func IsConflict(set1, set2 mapset.Set[string]) bool {
 	}
 }
 
-// ClassifyTx 对交易按资源是否冲突进行分类
+// ClassifyTx TODO: 对交易按资源是否冲突进行分类
 // 返回的map中每个int对应一个类，但不保证int是连续单增的，即int是什么不重要
 // 其中每个类别的交易序列按地址进行排序，若地址相同则按其Nonce从小到大排序
 func ClassifyTx(txs types.Transactions, signer types.Signer) map[int][]*types.Transaction {
@@ -122,7 +122,7 @@ func FindMaxGasPrice(txMap map[common.Address][]*types.Transaction) common.Addre
 	return maxGasPriceAddr
 }
 
-// SelectTxs 选出一些Transaction，这些Transaction的GasLimit的总和要最大且不超过整体的GasLimit
+// TODO: SelectTxs 选出一些Transaction，这些Transaction的GasLimit的总和要最大且不超过整体的GasLimit
 func SelectTxs(txMap map[common.Address][]*types.Transaction, gasLimit uint64) types.Transactions {
 	// copy一个副本
 	temp := make(map[common.Address][]*types.Transaction)

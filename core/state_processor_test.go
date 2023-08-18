@@ -109,9 +109,10 @@ func TestStateProcessorErrors(t *testing.T) {
 				},
 			}
 			// ethash.NewFaker : 创建了一个ethash共识引擎      NewBlockChain返回一个使用数据库中可用信息完全初始化的区块链
-			blockchain, _ = NewBlockChain(db, nil, gspec, nil, ethash.NewFaker(), vm.Config{}, nil, nil) // !ERROR TODO: 这可能是由于在反序列化（RLP解码）状态账户时接收到的数据元素数量不正确导致的
+			blockchain, _ = NewBlockChain(db, nil, gspec, nil, ethash.NewFaker(), vm.Config{}, nil, nil)
 		)
 		defer blockchain.Stop()
+		// t.Log(data)
 		bigNumber := new(big.Int).SetBytes(common.FromHex("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"))
 		tooBigNumber := new(big.Int).Set(bigNumber)
 		tooBigNumber.Add(tooBigNumber, common.Big1)
@@ -380,9 +381,8 @@ func TestStateProcessorErrors(t *testing.T) {
 	}
 }
 
-// GenerateBadBlock constructs a "block" which contains the transactions. The transactions are not expected to be
-// valid, and no proper post-state can be made. But from the perspective of the blockchain, the block is sufficiently
-// valid to be considered for import:
+// GenerateBadBlock构造一个包含交易的“区块”
+// 这些交易无效，并且无法形成适当的后状态。但是从区块链的角度来看，该区块是充分有效的，可以考虑进行导入：
 // - valid pow (fake), ancestry, difficulty, gaslimit etc
 func GenerateBadBlock(parent *types.Block, engine consensus.Engine, txs types.Transactions, config *params.ChainConfig) *types.Block {
 	difficulty := big.NewInt(0)

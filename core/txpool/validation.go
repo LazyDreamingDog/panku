@@ -168,7 +168,7 @@ type ValidationOptionsWithState struct {
 
 	// ExistingExpenditure is a mandatory callback to retrieve the cummulative
 	// cost of the already pooled transactions to check for overdrafts.
-	ExistingExpenditure func(addr common.Address, nonce uint64) *big.Int
+	ExistingExpenditure func(addr common.Address) *big.Int
 
 	// ExistingCost is a mandatory callback to retrieve an already pooled
 	// transaction's cost with the given nonce to check for overdrafts.
@@ -208,7 +208,7 @@ func ValidateTransactionWithState(tx *types.Transaction, signer types.Signer, op
 	}
 	// Ensure the transactor has enough funds to cover for replacements or nonce
 	// expansions without overdrafts
-	spent := opts.ExistingExpenditure(from, tx.Nonce())
+	spent := opts.ExistingExpenditure(from)
 	if prev := opts.ExistingCost(from, tx.Nonce()); prev != nil {
 		bump := new(big.Int).Sub(cost, prev)
 		need := new(big.Int).Add(spent, bump)

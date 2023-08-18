@@ -194,6 +194,25 @@ func (p *TxPool) Get(hash common.Hash) *Transaction {
 	return nil
 }
 
+func (p *TxPool) IsLocalTx(tx *types.Transaction) bool {
+	for _, subpool := range p.subpools {
+		if subpool.IsLocalTx(tx) {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *TxPool) ValidateTx(tx *types.Transaction, islocal bool) error {
+	var err error = nil
+	for _, subpool := range p.subpools {
+		if err = subpool.ValidateTx(tx, islocal); err == nil {
+			return nil
+		}
+	}
+	return err
+}
+
 // Add enqueues a batch of transactions into the pool if they are valid. Due
 // to the large transaction churn, add may postpone fully integrating the tx
 // to a later point to batch multiple ones together.

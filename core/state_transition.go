@@ -395,10 +395,13 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	// 获取到当前交易能否并行执行
 	st.msg.IsParallel = IsParallel
 
+	// !!! 缺少交易没执行的返回报错
+
 	// 当前交易为串行队列时则修改交易msg中的AccessList
 	if IsSerial {
 		judge := st.msg.ChangeMsgAL(TrueAccessList)
 		if !judge {
+			err = fmt.Errorf("修改msg中的AccessList时出错")
 			fmt.Println("修改msg中的AccessList时出错") // TODO: 后续可以修改出错时的返回方式
 		}
 	}
@@ -429,7 +432,7 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 		UsedGas:    st.gasUsed(),
 		Err:        vmerr,
 		ReturnData: ret,
-	}, nil
+	}, err // vmerr是执行时的报错，err是后续步骤的报错
 }
 
 func (st *StateTransition) refundGas(refundQuotient uint64) {

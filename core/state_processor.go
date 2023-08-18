@@ -79,14 +79,17 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		signer  = types.MakeSigner(p.config, header.Number, header.Time)
 	)
 
-	txsOri := block.Transactions() // todo:获取到的当前区块所有的交易序列
-	// todo:将 []*Transaction 类型转为 map[address][]*Transaction 类型，调用分组函数
-	txsChange := make(map[common.Address][]*types.Transaction)
-	txsChange[common.Address{114}] = txsOri
-	// TODO: 调用分组函数
+	// 获取到的当前区块所有的交易序列
+	txsOri := block.Transactions()
+	// 将 []*Transaction 类型转为 map[address][]*Transaction 类型，调用分组函数
+	// txsChange := make(map[common.Address][]*types.Transaction)
+	// txsChange[common.Address{114}] = txsOri
+
+	// 调用分组函数
+	txs := ClassifyTx(txsOri, signer)
 
 	// 模拟分组结果
-	txs := make(map[int][]*types.Transaction) // todo:txs中就是分好组的交易列表
+	// txs := make(map[int][]*types.Transaction) // ? txs中就是分好组的交易列表
 
 	// 获取组数
 	var RouNum int = 0
@@ -103,7 +106,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		eachStateDB := statedb.Copy()
 		RouLineArr = append(RouLineArr, eachStateDB)
 	}
-	index := 0 // 计数
+	index := 0 // stateDB计数
 
 	for _, value := range txs {
 		// 新建AllMessage
@@ -115,27 +118,37 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 
 	wg.Wait() // 等待并行组执行结束
 
-	// TODO: 提交stateDB状态到内存
+	// 提交stateDB状态到内存
 	for i := 0; i < len(RouLineArr); i++ {
 		RouLineArr[i].Finalise(true)
 	}
 
-	// TODO: 串行交易队列
+	// 串行交易队列
 	var SerialTxList []*types.Transaction
 
+	// ? TODO: 是否需要加一个空返回值的判断？
+	// ! 当你从管道中读取元素时，如果管道是空的，range循环将会阻塞
+	// ! 你可能想要添加一个超时机制或者使用带有接收操作的for循环来确保你的程序不会无限期地等待
 	for v := range rouchan {
 		if !v.IsSuccess {
 			fmt.Println("交易验证出错")
 			// 验证出错，函数直接退出循环
 			return nil, nil, 0, fmt.Errorf(v.ErrorMessage, v.Error)
 		}
+		fmt.Println("交易验证成功 bingo")
 		receipts = append(receipts, v.newReceipt...)
 		allLogs = append(allLogs, v.newAllLogs...)
 		SerialTxList = append(SerialTxList, v.SingleTxList...)
+		if len(rouchan) == 0 {
+			fmt.Println("============ channel is end ============")
+			break
+		}
 	}
 
 	// 串行交易队列排序
-	SortSerialTX(SerialTxList)
+	if len(SerialTxList) > 1 {
+		SortSerialTX(SerialTxList)
+	}
 	// 串行队列的stateDB
 	eachStateDB := statedb.Copy()
 
@@ -152,6 +165,10 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		}
 		receipts = append(receipts, v.newReceipt...)
 		allLogs = append(allLogs, v.newAllLogs...)
+		if len(rouchan) == 0 {
+			fmt.Println("channel is end")
+			break
+		}
 	}
 
 	wg.Wait() // 等待并行组执行结束
@@ -249,6 +266,7 @@ type MesReturn struct {
 
 // TxGoroutine todo：线程池执行交易 TODO: 新增参数 IsSerial bool 表明当前交易队列是否是串行队列
 func rouTest(txs []*types.Transaction, wg *sync.WaitGroup, RouChan chan MesReturn, message *AllMessage, IsSerial bool) {
+	wg.Add(1)       // ? 进来前计数器+1，结束后计数器-1
 	defer wg.Done() // 计数器-1
 
 	// 处理成功交易收据树
@@ -324,7 +342,6 @@ func rouTest(txs []*types.Transaction, wg *sync.WaitGroup, RouChan chan MesRetur
 		SingleTxList: SerialTxList,
 	}
 	RouChan <- returnMsg
-	return
 }
 
 func applyTransaction(msg *Message, config *params.ChainConfig, gp *GasPool, statedb *state.StateDB, blockNumber *big.Int, blockHash common.Hash, tx *types.Transaction, usedGas *uint64, evm *vm.EVM) (*types.Receipt, error) {
@@ -337,7 +354,13 @@ func applyTransaction(msg *Message, config *params.ChainConfig, gp *GasPool, sta
 
 	// Apply the transaction to the current state (included in the env).
 	result, err := ApplyMessage(evm, msg, gp)
-	if err != nil {
+	if result == nil { // 提前返回
+		return nil, fmt.Errorf("空的result")
+	}
+	if result.Err != nil { // 执行出错
+		return nil, result.Err
+	}
+	if err != nil { // 后续步骤出错
 		return nil, err
 	}
 

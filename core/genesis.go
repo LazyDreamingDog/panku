@@ -120,7 +120,7 @@ func (ga *GenesisAlloc) deriveHash() (common.Hash, error) {
 	// 创建一个短暂的内存数据库用于计算哈希，所有的派生状态将被丢弃以不污染磁盘
 	db := state.NewDatabase(rawdb.NewMemoryDatabase())
 	// CHANGE : NEW方法重构
-	statedb, err := state.New(types.EmptyRootHash, db, nil) // !没有报错
+	statedb, err := state.New(types.EmptyRootHash, db, nil)
 	// statedb, err := state.New(db, state.NewHistoryDB(rawdb.NewMemoryDatabase()))
 	if err != nil { // !没有报错
 		return common.Hash{}, err

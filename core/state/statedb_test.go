@@ -237,7 +237,7 @@ func TestSnapshotRandom(t *testing.T) {
 // accessor methods on the reverted state must match the return value of the equivalent
 // methods on the replayed state.
 type snapshotTest struct {
-	addrs     []common.Address // all account addresses
+	addrs     []common.Address // all account Address
 	actions   []testAction     // modifications to the state
 	snapshots []int            // actions indexes at which snapshot is taken
 	err       error            // failure details are reported through this field
@@ -801,26 +801,26 @@ func TestStateDBAccessList(t *testing.T) {
 	memDb := rawdb.NewMemoryDatabase()
 	db := NewDatabase(memDb)
 	state, _ := New(types.EmptyRootHash, db, nil)
-	state.accessList = newAccessList()
+	state.AccessList = newAccessList()
 
 	verifyAddrs := func(astrings ...string) {
 		t.Helper()
 		// convert to common.Address form
-		var addresses []common.Address
+		var Address []common.Address
 		var addressMap = make(map[common.Address]struct{})
 		for _, astring := range astrings {
 			address := addr(astring)
-			addresses = append(addresses, address)
+			Address = append(Address, address)
 			addressMap[address] = struct{}{}
 		}
-		// Check that the given addresses are in the access list
-		for _, address := range addresses {
+		// Check that the given Address are in the access list
+		for _, address := range Address {
 			if !state.AddressInAccessList(address) {
 				t.Fatalf("expected %x to be in access list", address)
 			}
 		}
-		// Check that only the expected addresses are present in the access list
-		for address := range state.accessList.addresses {
+		// Check that only the expected Address are present in the access list
+		for address := range state.AccessList.Addresses {
 			if _, exist := addressMap[address]; !exist {
 				t.Fatalf("extra address %x in access list", address)
 			}
@@ -846,9 +846,9 @@ func TestStateDBAccessList(t *testing.T) {
 			}
 		}
 		// Check that no extra elements are in the access list
-		index := state.accessList.addresses[address]
+		index := state.AccessList.Addresses[address]
 		if index >= 0 {
-			stateSlots := state.accessList.slots[index]
+			stateSlots := state.AccessList.Slots[index]
 			for s := range stateSlots {
 				if _, slotPresent := slotMap[s]; !slotPresent {
 					t.Fatalf("scope has extra slot %v (address %v)", s, addrString)
@@ -944,10 +944,10 @@ func TestStateDBAccessList(t *testing.T) {
 	if state.AddressInAccessList(addr("aa")) {
 		t.Fatalf("addr present, expected missing")
 	}
-	if got, exp := len(state.accessList.addresses), 0; got != exp {
+	if got, exp := len(state.AccessList.Addresses), 0; got != exp {
 		t.Fatalf("expected empty, got %d", got)
 	}
-	if got, exp := len(state.accessList.slots), 0; got != exp {
+	if got, exp := len(state.AccessList.Slots), 0; got != exp {
 		t.Fatalf("expected empty, got %d", got)
 	}
 	// Check the copy
@@ -955,10 +955,10 @@ func TestStateDBAccessList(t *testing.T) {
 	state = stateCopy1
 	verifyAddrs("aa", "bb")
 	verifySlots("bb", "01", "02")
-	if got, exp := len(state.accessList.addresses), 2; got != exp {
+	if got, exp := len(state.AccessList.Addresses), 2; got != exp {
 		t.Fatalf("expected empty, got %d", got)
 	}
-	if got, exp := len(state.accessList.slots), 1; got != exp {
+	if got, exp := len(state.AccessList.Slots), 1; got != exp {
 		t.Fatalf("expected empty, got %d", got)
 	}
 }

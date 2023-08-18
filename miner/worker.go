@@ -513,7 +513,7 @@ func (w *worker) mainLoop() {
 	for {
 		select {
 		case req := <-w.newWorkCh:
-			w.commitWork(req.interrupt, req.timestamp)
+			w.commitWork(req.interrupt, req.timestamp) // !!! 走的这一条路
 
 		case req := <-w.getWorkCh:
 			block, fees, err := w.generateWork(req.params)
@@ -532,7 +532,9 @@ func (w *worker) mainLoop() {
 					txs[acc] = append(txs[acc], tx)              // 对应的key(address)加上对应的value(tx)
 				}
 
-				txset := make(map[int][]*types.Transaction) // TODO: 这里实际上调用了分组函数，返回了map[common.Address][]*types.Transactions数据类型，这里防止报错模拟一下
+				// txset := make(map[int][]*types.Transaction) // TODO: 这里实际上调用了分组函数，返回了map[common.Address][]*types.Transactions数据类型，这里防止报错模拟一下
+
+				txset := core.ClassifyTx(ev.Txs, w.current.signer)
 
 				// 获取组数
 				var RouNum int = 0
@@ -820,6 +822,8 @@ func (w *worker) commitTransactions(env *environment, txs map[int][]*types.Trans
 		RouLine = append(RouLine, eachENV)
 	}
 
+	fmt.Println("============= len(txs) = ", len(txs)) // ! byd txs里都是空的
+
 	// 建立m+1个交易执行环境
 	for i, value := range txs {
 		// key是组号(可能没有意义)，value是排好序的交易组
@@ -839,11 +843,18 @@ func (w *worker) commitTransactions(env *environment, txs map[int][]*types.Trans
 	// todo:串行队列
 	var SerialTxList []*types.Transaction
 
+	fmt.Println("=============", len(rouchan)) // !!! 空的
+
 	for v := range rouchan { // 通过通道接收操作获取函数的返回值
+		break
 		env.txs = append(env.txs, v.newTxs...)                    // 上传tx
 		env.receipts = append(env.receipts, v.newReceipt...)      // 上传收据
 		SerialTxList = append(SerialTxList, v.SerialTxList...)    // 串行队列
 		coalescedLogs = append(coalescedLogs, v.coalescedLogs...) // logs
+		if len(rouchan) == 0 {
+			fmt.Println("channel is end")
+			break
+		}
 	}
 
 	// 串行组排序
@@ -860,6 +871,10 @@ func (w *worker) commitTransactions(env *environment, txs map[int][]*types.Trans
 		env.txs = append(env.txs, v.newTxs...)                    // 上传tx
 		env.receipts = append(env.receipts, v.newReceipt...)      // 上传收据
 		coalescedLogs = append(coalescedLogs, v.coalescedLogs...) // logs
+		if len(rouchan1) == 0 {
+			fmt.Println("channel is end")
+			break
+		}
 	}
 
 	if !w.isRunning() && len(coalescedLogs) > 0 {
@@ -901,7 +916,10 @@ func SortSerialTX(SingleTxList []*types.Transaction) {
 
 // RouTest todo:MesReturn 是一个通道，专门处理线程处理的返回值
 func (w *worker) RouTest(env *environment, txs []*types.Transaction, wg *sync.WaitGroup, RouChan chan MesReturn, IsSerial bool) {
+	wg.Add(1)
 	defer wg.Done() // 计数器-1
+
+	fmt.Println("RouTest函数开始执行")
 
 	// 新建交易队列，存储串行交易
 	var SerialTxList []*types.Transaction
@@ -947,8 +965,6 @@ func (w *worker) RouTest(env *environment, txs []*types.Transaction, wg *sync.Wa
 		if !rouReturn.IsParallel {
 			// 交易是串行的，需要放入串行执行队列
 			SerialTxList = append(SerialTxList, rouReturn.TX)
-			// TODO: 回滚交易
-
 		}
 
 		// 如果交易出现错误，也有可能没有错误，错误处理，判断依据主要是nonce值
@@ -979,6 +995,8 @@ func (w *worker) RouTest(env *environment, txs []*types.Transaction, wg *sync.Wa
 
 	// todo:通过管道返回数据
 	RouChan <- returnChan
+
+	fmt.Println("这里 routest 函数没有提前返回，顺利执行完了所有功能")
 
 }
 
@@ -1060,6 +1078,9 @@ func (w *worker) prepareWork(genParams *generateParams) (*environment, error) {
 
 // fillTransactions 从 txpool 检索挂起的交易，并将它们填充到给定的密封块中。交易选择和排序策略可以在将来使用插件进行定制。
 func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment) error {
+
+	fmt.Println("运行 fillTransactions 函数")
+
 	// Split the pending transactions into locals and remotes
 	// Fill the block with all available pending transactions.
 	pending := w.eth.TxPool().Pending(true)
@@ -1077,7 +1098,10 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment) err
 
 		// todo：localTxs 需要调用分组方法，类型一样，可以直接调用，然后返回分组，这里我们先模拟一个
 		// 传入 map[common.Address][]*types.Transaction 传出 map[int][]*types.Transaction
-		txs := make(map[int][]*types.Transaction)
+		// txs := make(map[int][]*types.Transaction)
+
+		txs := core.ClassifyTx(env.txs, w.current.signer) // 分组
+		// !!! byd传过来的交易就是空的
 
 		// todo:获取组数
 		var RouNum int = 0
@@ -1162,7 +1186,7 @@ func (w *worker) commitWork(interrupt *atomic.Int32, timestamp int64) {
 		return
 	}
 	// Fill pending transactions from the txpool into the block.
-	err = w.fillTransactions(interrupt, work)
+	err = w.fillTransactions(interrupt, work) // !!!
 	switch {
 	case err == nil:
 		// The entire block is filled, decrease resubmit interval in case

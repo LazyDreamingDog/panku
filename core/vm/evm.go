@@ -170,7 +170,8 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 	p, isPrecompile := evm.precompile(addr)
 	debug := evm.Config.Tracer != nil
 
-	if !evm.StateDB.Exist(addr) {
+	// TODO: 检测目的地地址是否存在
+	if !evm.StateDB.Exist(addr) { // 目的地址不存在，则直接退出
 		if !isPrecompile && evm.chainRules.IsEIP158 && value.Sign() == 0 {
 			// Call一个不存在的账户，什么都不做，只是ping追踪器
 			if debug {
@@ -182,7 +183,8 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 					evm.Config.Tracer.CaptureExit(ret, 0, nil)
 				}
 			}
-			return nil, gas, nil, true
+			err = fmt.Errorf("目标地址不存在")
+			return nil, gas, err, true
 		}
 		evm.StateDB.CreateAccount(addr) // 创建账户
 	}
