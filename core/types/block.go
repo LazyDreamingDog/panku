@@ -473,3 +473,9 @@ func HeaderParentHashFromRLP(header []byte) common.Hash {
 	}
 	return common.BytesToHash(parentHash)
 }
+
+// TODO: 新建方法
+// SetTransactions 替换区块内的交易
+func (b *Block) SetTransactions(newtxs Transactions) {
+	b.transactions = newtxs
+}

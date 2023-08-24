@@ -44,9 +44,13 @@ func MergeAccessList(al types.AccessList) mapset.Set[string] {
 	set := mapset.NewSet[string]()
 	for _, resource := range al {
 		addr := resource.Address.Hex()
-		for _, storageKey := range resource.StorageKeys {
-			key := storageKey.Hex()
-			set.Add(addr + key)
+		if len(resource.StorageKeys) > 0 {
+			for _, storageKey := range resource.StorageKeys {
+				key := storageKey.Hex()
+				set.Add(addr + key)
+			}
+		} else {
+			set.Add(addr)
 		}
 	}
 	return set
@@ -75,7 +79,7 @@ func ClassifyTx(txs types.Transactions, signer types.Signer) map[int][]*types.Tr
 				continue // 不存在冲突则继续循环
 			} else { // 若存在冲突，两个交易合为一类
 				txClassList[j].ID = txClassList[i].ID // 分类的ID进行改变
-				txClassList[i].TxResource.Union(txClassList[j].TxResource)
+				txClassList[i].TxResource = txClassList[i].TxResource.Union(txClassList[j].TxResource)
 				txClassList[j].TxResource = txClassList[i].TxResource // 交易的资源合并再继续与之后的交易进行比较
 			}
 		}

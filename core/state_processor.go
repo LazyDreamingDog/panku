@@ -17,10 +17,12 @@
 package core
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"math/big"
 	"sort"
+	"strconv"
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -75,21 +77,15 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 	}
 	var (
 		context = NewEVMBlockContext(header, p.bc, nil)
-		vmenv   = vm.NewEVM(context, vm.TxContext{}, statedb, p.config, cfg)
-		signer  = types.MakeSigner(p.config, header.Number, header.Time)
+		// vmenv   = vm.NewEVM(context, vm.TxContext{}, statedb, p.config, cfg) // ! ERROR
+		signer = types.MakeSigner(p.config, header.Number, header.Time)
 	)
 
 	// 获取到的当前区块所有的交易序列
 	txsOri := block.Transactions()
-	// 将 []*Transaction 类型转为 map[address][]*Transaction 类型，调用分组函数
-	// txsChange := make(map[common.Address][]*types.Transaction)
-	// txsChange[common.Address{114}] = txsOri
 
 	// 调用分组函数
 	txs := ClassifyTx(txsOri, signer)
-
-	// 模拟分组结果
-	// txs := make(map[int][]*types.Transaction) // ? txs中就是分好组的交易列表
 
 	// 获取组数
 	var RouNum int = 0
@@ -97,92 +93,111 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		RouNum++
 	}
 
-	rouchan := make(chan MesReturn, RouNum) // 创建一个带缓冲的通道
-	var wg sync.WaitGroup                   // 等待组
-	var RouLineArr []*state.StateDB         // 存每个线程的stateDB
+	rouchan := make(chan MesReturn, RouNum) // 创建一个带缓冲的通道，并行
+	rouchan1 := make(chan MesReturn, 1)     // 创建一个带缓冲的通道，串行
+	var wg sync.WaitGroup                   // 等待组，并行
+	var wg1 sync.WaitGroup                  // 等待组，串行
+	var RouStatedbArr []*state.StateDB      // 存每个线程的stateDB
+	var RouEvmArr []*vm.EVM                 // 存每个线程的evm，stateDB最终会赋值到evm中
 
-	// 拷贝stateDB
-	for _, _ = range txs {
+	// 拷贝stateDB与evm
+	for range txs {
 		eachStateDB := statedb.Copy()
-		RouLineArr = append(RouLineArr, eachStateDB)
+		eachEvm := vm.NewEVM(context, vm.TxContext{}, statedb, p.config, cfg)
+		RouStatedbArr = append(RouStatedbArr, eachStateDB)
+		RouEvmArr = append(RouEvmArr, eachEvm)
+		wg.Add(1) // 计数器+1 // ! 防止出现第二个线程还没+1的时候第一个线程已经执行完的情况
 	}
 	index := 0 // stateDB计数
 
 	for _, value := range txs {
 		// 新建AllMessage
-		EachAllMessage := NewAllMessage(p.config, gp, RouLineArr[index], blockNumber, blockHash, usedGas, vmenv, signer, header)
+		EachAllMessage := NewAllMessage(p.config, gp, RouStatedbArr[index], blockNumber, blockHash, usedGas, RouEvmArr[index], signer, header)
 		// key是组号(可能没有意义)，value是排好序的交易组
-		go rouTest(value, &wg, rouchan, EachAllMessage, false) // 并行交易队列
+		go rouTest(value, &wg, rouchan, EachAllMessage, false, index) // 并行交易队列
 		index++
 	}
 
 	wg.Wait() // 等待并行组执行结束
 
 	// 提交stateDB状态到内存
-	for i := 0; i < len(RouLineArr); i++ {
-		RouLineArr[i].Finalise(true)
+	for i := 0; i < len(RouStatedbArr); i++ {
+		RouStatedbArr[i].Finalise(true)
+		// 合并obj
+		spo, so := RouStatedbArr[i].GetPendingObj()
+		statedb.SetPendingObj(spo)
+		statedb.UpdateStateObj(so)
 	}
 
 	// 串行交易队列
 	var SerialTxList []*types.Transaction
 
-	// ? TODO: 是否需要加一个空返回值的判断？
-	// ! 当你从管道中读取元素时，如果管道是空的，range循环将会阻塞
-	// ! 你可能想要添加一个超时机制或者使用带有接收操作的for循环来确保你的程序不会无限期地等待
-	for v := range rouchan {
-		if !v.IsSuccess {
-			fmt.Println("交易验证出错")
-			// 验证出错，函数直接退出循环
-			return nil, nil, 0, fmt.Errorf(v.ErrorMessage, v.Error)
-		}
-		fmt.Println("交易验证成功 bingo")
-		receipts = append(receipts, v.newReceipt...)
-		allLogs = append(allLogs, v.newAllLogs...)
-		SerialTxList = append(SerialTxList, v.SingleTxList...)
-		if len(rouchan) == 0 {
-			fmt.Println("============ channel is end ============")
-			break
+	if len(rouchan) == 0 {
+		fmt.Println("ERROR 并行线程返回通道为空")
+		return nil, nil, 0, fmt.Errorf("ERROR 并行线程返回通道为空")
+	} else {
+		for v := range rouchan {
+			if !v.IsSuccess {
+				fmt.Println("交易验证出错，验证失败")
+				// 验证出错，函数直接退出循环
+				return nil, nil, 0, fmt.Errorf(v.ErrorMessage, v.Error)
+			}
+			fmt.Println("Congratulations 一组并行交易验证成功")
+			receipts = append(receipts, v.newReceipt...)
+			allLogs = append(allLogs, v.newAllLogs...)
+			SerialTxList = append(SerialTxList, v.SingleTxList...)
+			if len(rouchan) == 0 {
+				fmt.Println("并行 channel返回值处理完成")
+				break
+			}
 		}
 	}
 
-	// 串行交易队列排序
+	// ? 串行交易队列排序
 	if len(SerialTxList) > 1 {
+		fmt.Println("串行队列中存在交易")
 		SortSerialTX(SerialTxList)
-	}
-	// 串行队列的stateDB
-	eachStateDB := statedb.Copy()
 
-	// 新建AllMessage
-	EachAllMessage := NewAllMessage(p.config, gp, eachStateDB, blockNumber, blockHash, usedGas, vmenv, signer, header)
+		// 串行队列的stateDB // ! 直接用stateDB就行
+		// eachStateDB := statedb.Copy()
 
-	go rouTest(SerialTxList, &wg, rouchan, EachAllMessage, true) // TODO: 穿行交易队列
+		// 拷贝evm
+		eachEvm := vm.NewEVM(context, vm.TxContext{}, statedb, p.config, cfg)
+		// 新建AllMessage
+		EachAllMessage := NewAllMessage(p.config, gp, statedb, blockNumber, blockHash, usedGas, eachEvm, signer, header)
 
-	for v := range rouchan {
-		if !v.IsSuccess {
-			fmt.Println("交易验证出错")
-			// 验证出错，函数直接退出循环
-			return nil, nil, 0, fmt.Errorf(v.ErrorMessage, v.Error)
+		wg1.Add(1)                                                         // 计数器+1
+		go rouTest(SerialTxList, &wg1, rouchan1, EachAllMessage, true, -1) // TODO: 穿行交易队列
+
+		wg1.Wait() // 等待串行组执行结束
+
+		for v := range rouchan1 {
+			if !v.IsSuccess {
+				fmt.Println("交易验证出错，验证失败")
+				// 验证出错，函数直接退出循环
+				return nil, nil, 0, fmt.Errorf(v.ErrorMessage, v.Error)
+			} else {
+				fmt.Println("Congratulations 一组串行交易验证成功")
+			}
+			receipts = append(receipts, v.newReceipt...)
+			allLogs = append(allLogs, v.newAllLogs...)
+			if len(rouchan1) == 0 { // 串行组这里管道长度为0
+				fmt.Println("串行 channel返回值处理完成")
+				break
+			}
 		}
-		receipts = append(receipts, v.newReceipt...)
-		allLogs = append(allLogs, v.newAllLogs...)
-		if len(rouchan) == 0 {
-			fmt.Println("channel is end")
-			break
-		}
+
+		// 并行交易执行结束
+		// 提交stateDB状态到内存
+		statedb.Finalise(true) // ? 没有copy所以不用继续合并
 	}
-
-	wg.Wait() // 等待并行组执行结束
-
-	// 并行交易执行结束
-	// 提交stateDB状态到内存
-	eachStateDB.Finalise(true)
 
 	// commit
 	BlockHash, err := statedb.Commit(true)
 	if err != nil {
 		fmt.Print("commit函数出错")
+		return nil, nil, 0, fmt.Errorf("commit函数出错", err)
 	}
-
 	fmt.Println(BlockHash) // TODO: 后续可能需要修改
 
 	withdrawals := block.Withdrawals()
@@ -265,9 +280,39 @@ type MesReturn struct {
 }
 
 // TxGoroutine todo：线程池执行交易 TODO: 新增参数 IsSerial bool 表明当前交易队列是否是串行队列
-func rouTest(txs []*types.Transaction, wg *sync.WaitGroup, RouChan chan MesReturn, message *AllMessage, IsSerial bool) {
-	wg.Add(1)       // ? 进来前计数器+1，结束后计数器-1
+func rouTest(txs []*types.Transaction, wg *sync.WaitGroup, RouChan chan MesReturn, message *AllMessage, IsSerial bool, id int) {
+	// ! TODO: 注意 管道中存储的是一个组的运行结果，不是一个交易的运行结果
+
 	defer wg.Done() // 计数器-1
+	id_str := strconv.Itoa(id)
+	if id == -1 {
+		id_str = "main"
+	}
+	var result = "In thread: " + id_str + " the stateDB is: {\n"
+	for _, stobj := range message.StateDB.GetStateObj() {
+		result += "\t{\n"
+		result += "\t\tAddress: " + stobj.Address().Hex() + ",\n"
+		nonce_str := strconv.Itoa(int(stobj.Nonce()))
+		result += "\t\tNonce: " + nonce_str + ",\n"
+		result += "\t}\n"
+	}
+	result += "}\n"
+	if id == -1 {
+		fmt.Println(result)
+	}
+
+	result = "In thread: " + id_str + " the txs are: {\n"
+	for _, tx := range txs {
+		result += "\t{\n"
+		from, _ := message.Signer.Sender(tx)
+		result += "\t\tFrom: " + from.Hex() + ",\n"
+		nonce_str := strconv.Itoa(int(tx.Nonce()))
+		result += "\t\tNonce: " + nonce_str + ",\n"
+		result += "\t\tTo: " + tx.To().Hex() + ",\n"
+		result += "\t}\n"
+	}
+	result += "}\n"
+	//	fmt.Println(result)
 
 	// 处理成功交易收据树
 	var newReceipt []*types.Receipt
@@ -275,7 +320,9 @@ func rouTest(txs []*types.Transaction, wg *sync.WaitGroup, RouChan chan MesRetur
 	var newAllLogs []*types.Log
 	// 串行队列
 	var SerialTxList []*types.Transaction
-
+	// 是否出错
+	var IsErr bool
+	IsErr = true
 	for i := 0; i < len(txs); i++ {
 		// TODO: 组装msg，msg包含了区块中所有的交易的信息，AccessList包含在msg中
 		msg, err := TransactionToMessage(txs[i], message.Signer, message.Header.BaseFee, IsSerial) // 将交易转换为消息msg，包含交易的必要信息
@@ -290,13 +337,74 @@ func rouTest(txs []*types.Transaction, wg *sync.WaitGroup, RouChan chan MesRetur
 				SingleTxList: nil,
 			}
 			RouChan <- returnMsg
-			return // 验证只要出错就直接返回
+			// 验证只要出错就直接返回
+			IsErr = true
+			break
 		}
+
+		// 交易执行前打印相关信息
+		result = "In thread: " + id_str + " executing tx: {\n"
+		result += "\t{\n"
+		result += "\t\tFrom: " + msg.From.Hex() + ",\n"
+		result += "\t\tTo: " + msg.To.Hex() + ",\n"
+		result += "\t\tNonce: " + strconv.Itoa(int(msg.Nonce)) + ",\n"
+		result += "\t\tAccessList: {"
+		for _, v := range msg.AccessList {
+			result += v.Address.Hex() + ", "
+		}
+		result += "},\n"
+		result += "\t}\n"
+		result += "}\n"
+		fmt.Println(result)
 
 		// TODO: 执行交易
 		receipt, err := applyTransaction(msg, message.Config, message.Gp, message.StateDB, message.BlockNumber, message.BlockHash, txs[i], message.UsedGas, message.Vmenv)
+
+		// 并行交易，无法并行执行 => 放到串行组，不报错
+		if !msg.IsParallel && !msg.IsSerial {
+			result = "In thread: " + id_str + " cannot put into parallel queue while exeuting tx: {\n"
+			result += "\t{\n"
+			result += "\t\tFrom: " + msg.From.Hex() + ",\n"
+			result += "\t\tTo: " + msg.To.Hex() + ",\n"
+			result += "\t\tNonce: " + strconv.Itoa(int(msg.Nonce)) + ",\n"
+			result += "\t}\n"
+			result += "}\n"
+			fmt.Println(result)
+		}
+
+		// 不报错，交易可以并行或者交易在串行队列 => 成功执行
+		if err == nil && (msg.IsParallel || msg.IsSerial) {
+			result = "In thread: " + id_str + " successfully execute tx: {\n"
+			result += "\t{\n"
+			result += "\t\tFrom: " + msg.From.Hex() + ",\n"
+			result += "\t\tTo: " + msg.To.Hex() + ",\n"
+			result += "\t\tNonce: " + strconv.Itoa(int(msg.Nonce)) + ",\n"
+			result += "\t}\n"
+			result += "}\n"
+			result += "The new State is: {\n"
+			result += "\t{\n"
+			result += "\t\tAddress: " + msg.From.Hex() + ",\n"
+			if message.StateDB.GetNonce(msg.From) == 0 {
+				fmt.Println("????")
+			}
+			nonce_str := strconv.Itoa(int(message.StateDB.GetNonce(msg.From)))
+			result += "\t\tNonce: " + nonce_str + ",\n"
+			result += "\t}\n"
+			result += "}\n"
+			fmt.Println(result)
+		}
+
 		// 验证时，交易执行出错则直接返回
 		if err != nil {
+			result = "In thread: " + id_str + " Fatal error while exeuting tx: {\n"
+			result += "\t{\n"
+			result += "\t\tFrom: " + msg.From.Hex() + ",\n"
+			result += "\t\tTo: " + msg.To.Hex() + ",\n"
+			result += "\t\tNonce: " + strconv.Itoa(int(msg.Nonce)) + ",\n"
+			result += "\t}\n"
+			result += "}\n"
+			fmt.Println(result)
+
 			var returnMsg = MesReturn{
 				IsSuccess:    false,
 				ErrorMessage: "could not apply tx" + txs[i].Hash().Hex(),
@@ -306,14 +414,19 @@ func rouTest(txs []*types.Transaction, wg *sync.WaitGroup, RouChan chan MesRetur
 				SingleTxList: nil,
 			}
 			RouChan <- returnMsg
-			return
+			// return
+			IsErr = true
+			break
 		}
 
+		IsErr = false
+
+		// 到这里有err的已经返回了，所以不需要额外判断
 		// TODO: 串行队列需要更改原交易的AccessList，执行后的msg中的AccessList已经是最新的AccessList
 		if IsSerial {
-			judge := txs[i].ChangeAccessList(msg.AccessList) // 验证交易是否需要更改串行队列交易的AccessList TODO: 还需要讨论
+			judge := txs[i].ChangeAccessList(msg.AccessList) // 已检查
 			if !judge {
-				fmt.Println("当前交易不存在AccessList，无法修改交易的AccessList")
+				fmt.Println("当前交易不存在AccessList，无法修改交易的AccessList") // pankutx不存在这个判断
 			} else {
 				fmt.Println("串行队列交易的AccessList修改成功")
 			}
@@ -322,26 +435,43 @@ func rouTest(txs []*types.Transaction, wg *sync.WaitGroup, RouChan chan MesRetur
 		// 交易能否并行执行
 		IsParallel := msg.IsParallel
 
-		// todo:交易没有错，更新收据树和记录
-		newReceipt = append(newReceipt, receipt)         // 收据树
-		newAllLogs = append(newAllLogs, receipt.Logs...) // logs
-
+		// 交易没有错，只是要被踢出当前队列，放入串行队列
 		if IsParallel == false && IsSerial == false {
 			// 串行交易队列
 			SerialTxList = append(SerialTxList, txs[i])
+			tempAddr, _ := message.Signer.Sender(txs[i])
+
+			// todo 将同一address的交易全部去除
+			t := i + 1
+			for ; t < len(txs); t++ {
+				ta, _ := message.Signer.Sender(txs[t])
+				if bytes.Compare(tempAddr[:], ta[:]) == 0 {
+					SerialTxList = append(SerialTxList, txs[t])
+				} else {
+					break
+				}
+			}
+
+			txs = txs[t:]
+			i = -1 // i 重置
+		} else {
+			newReceipt = append(newReceipt, receipt)         // 收据树
+			newAllLogs = append(newAllLogs, receipt.Logs...) // logs
 		}
 	}
 
-	// 验证结束
-	var returnMsg = MesReturn{
-		IsSuccess:    true,
-		ErrorMessage: "nil",
-		Error:        nil,
-		newReceipt:   newReceipt,
-		newAllLogs:   newAllLogs,
-		SingleTxList: SerialTxList,
+	if !IsErr {
+		// 验证结束，所有交易都没有报错（包括需要放到串行队列里的交易）
+		var returnMsg = MesReturn{
+			IsSuccess:    true,
+			ErrorMessage: "nil",
+			Error:        nil,
+			newReceipt:   newReceipt,
+			newAllLogs:   newAllLogs,
+			SingleTxList: SerialTxList,
+		}
+		RouChan <- returnMsg
 	}
-	RouChan <- returnMsg
 }
 
 func applyTransaction(msg *Message, config *params.ChainConfig, gp *GasPool, statedb *state.StateDB, blockNumber *big.Int, blockHash common.Hash, tx *types.Transaction, usedGas *uint64, evm *vm.EVM) (*types.Receipt, error) {
@@ -355,50 +485,48 @@ func applyTransaction(msg *Message, config *params.ChainConfig, gp *GasPool, sta
 	// Apply the transaction to the current state (included in the env).
 	result, err := ApplyMessage(evm, msg, gp)
 	if result == nil { // 提前返回
-		return nil, fmt.Errorf("空的result")
-	}
-	if result.Err != nil { // 执行出错
-		return nil, result.Err
-	}
-	if err != nil { // 后续步骤出错
+		if err == nil {
+			fmt.Println("这笔交易没法在当前队列中执行")
+		}
 		return nil, err
 	}
+	if result.Err != nil { // 执行出错
+		fmt.Println("虚拟机中交易执行出错")
+		return nil, result.Err
+	}
 
-	// Update the state with pending changes.
-	var root []byte
-	if config.IsByzantium(blockNumber) {
-		// TODO : Finalise重构了
-		statedb.Finalise(true)
-		// statedb.Finalise()
+	if msg.IsSerial == false && msg.IsParallel == false {
+		// 并行队列无法串行执行，无需执行后续步骤
+		return nil, nil
 	} else {
-		// CHANGE : 这里是计算中间状态，可以去掉
-		// root = statedb.IntermediateRoot(config.IsEIP158(blockNumber)).Bytes()
-	}
-	*usedGas += result.UsedGas
+		// Update the state with pending changes.
+		var root []byte
+		*usedGas += result.UsedGas
 
-	// Create a new receipt for the transaction, storing the intermediate root and gas used
-	// by the tx.
-	receipt := &types.Receipt{Type: tx.Type(), PostState: root, CumulativeGasUsed: *usedGas}
-	if result.Failed() {
-		receipt.Status = types.ReceiptStatusFailed
-	} else {
-		receipt.Status = types.ReceiptStatusSuccessful
-	}
-	receipt.TxHash = tx.Hash()
-	receipt.GasUsed = result.UsedGas
+		// Create a new receipt for the transaction, storing the intermediate root and gas used
+		// by the tx.
+		receipt := &types.Receipt{Type: tx.Type(), PostState: root, CumulativeGasUsed: *usedGas}
+		if result.Failed() {
+			receipt.Status = types.ReceiptStatusFailed
+		} else {
+			receipt.Status = types.ReceiptStatusSuccessful
+		}
+		receipt.TxHash = tx.Hash()
+		receipt.GasUsed = result.UsedGas
 
-	// If the transaction created a contract, store the creation address in the receipt.
-	if msg.To == nil {
-		receipt.ContractAddress = crypto.CreateAddress(evm.TxContext.Origin, tx.Nonce())
-	}
+		// If the transaction created a contract, store the creation address in the receipt.
+		if msg.To == nil {
+			receipt.ContractAddress = crypto.CreateAddress(evm.TxContext.Origin, tx.Nonce())
+		}
 
-	// Set the receipt logs and create the bloom filter.
-	receipt.Logs = statedb.GetLogs(tx.Hash(), blockNumber.Uint64(), blockHash)
-	receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
-	receipt.BlockHash = blockHash
-	receipt.BlockNumber = blockNumber
-	receipt.TransactionIndex = uint(statedb.TxIndex()) // TODO: no use
-	return receipt, err
+		// Set the receipt logs and create the bloom filter.
+		receipt.Logs = statedb.GetLogs(tx.Hash(), blockNumber.Uint64(), blockHash)
+		receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
+		receipt.BlockHash = blockHash
+		receipt.BlockNumber = blockNumber
+		receipt.TransactionIndex = uint(statedb.TxIndex()) // TODO: no use
+		return receipt, err
+	}
 }
 
 // ApplyTransaction attempts to apply a transaction to the given state database

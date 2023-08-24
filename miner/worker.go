@@ -538,12 +538,13 @@ func (w *worker) mainLoop() {
 
 				// 获取组数
 				var RouNum int = 0
-				for _, _ = range txset {
+				for range txset {
 					RouNum++
 				}
 				// 周期内Tx计数
 				err := w.commitTransactions(w.current, txset, nil, RouNum)
 				if err != nil {
+					fmt.Println("worker函数出错，错误原因：", err)
 					return
 				}
 
@@ -809,72 +810,77 @@ func (w *worker) commitTransactions(env *environment, txs map[int][]*types.Trans
 		}
 	}
 
-	env.gasPool.AddGas(999999999999) // 加入无穷大的数，因为txpool已经保证了费用可以支付，因此gaspool在交易时无需判断
+	env.gasPool.AddGas(99999999999999) // 加入无穷大的数，因为txpool已经保证了费用可以支付，因此gaspool在交易时无需判断
 
 	rouchan := make(chan MesReturn, RouNum) // 创建一个带缓冲的通道
 	var wg sync.WaitGroup                   // 等待组
 
 	var RouLine []*environment // 存env
 
-	for _, _ = range txs {
+	for range txs {
 		// 每个组都是AccessList不会互相交叉的情况，因此就算创建时间有延迟，也不会影响最后的结果，所以我们把创建过程放在循环里面
 		eachENV := env.copy() // 每个交易执行组都有一个独立的env环境
 		RouLine = append(RouLine, eachENV)
 	}
 
-	fmt.Println("============= len(txs) = ", len(txs)) // ! byd txs里都是空的
-
 	// 建立m+1个交易执行环境
 	for i, value := range txs {
 		// key是组号(可能没有意义)，value是排好序的交易组
-		go w.RouTest(RouLine[i], value, &wg, rouchan, false) // todo:txs应该是每个组，而且这里不能这样写，因为每组传入的是不一样的
+		go w.RouTest(RouLine[i], value, &wg, rouchan, false)
 	}
 
 	wg.Wait() // 等待并行组执行结束
 
-	for i, _ := range txs {
+	for i := range txs {
 		// todo:后续更改哈希合并
 		RouLine[i].state.Finalise(true)
 	}
 
-	// 再次拷贝一份最新的env
-	eachENV := env.copy() // 每个交易执行组都有一个独立的env环境
-
 	// todo:串行队列
 	var SerialTxList []*types.Transaction
 
-	fmt.Println("=============", len(rouchan)) // !!! 空的
-
-	for v := range rouchan { // 通过通道接收操作获取函数的返回值
-		break
-		env.txs = append(env.txs, v.newTxs...)                    // 上传tx
-		env.receipts = append(env.receipts, v.newReceipt...)      // 上传收据
-		SerialTxList = append(SerialTxList, v.SerialTxList...)    // 串行队列
-		coalescedLogs = append(coalescedLogs, v.coalescedLogs...) // logs
-		if len(rouchan) == 0 {
-			fmt.Println("channel is end")
-			break
+	if len(rouchan) == 0 {
+		fmt.Println("ERROR 当前的返回通道为空，说明线程并没有正常执行")
+		return fmt.Errorf("空的返回通道")
+	} else {
+		for v := range rouchan { // 通过通道接收操作获取函数的返回值
+			env.txs = append(env.txs, v.newTxs...)                    // 上传tx
+			env.receipts = append(env.receipts, v.newReceipt...)      // 上传收据
+			SerialTxList = append(SerialTxList, v.SerialTxList...)    // 串行队列
+			coalescedLogs = append(coalescedLogs, v.coalescedLogs...) // logs
+			if len(rouchan) == 0 {
+				fmt.Println("============ 并行 channel is end ============")
+				break
+			}
 		}
 	}
 
-	// 串行组排序
-	SortSerialTX(SerialTxList) // 排完序的SingleTxList
+	if len(SerialTxList) > 0 {
+		fmt.Println("串行队列不为空，开始执行穿行交易")
+		// 再次拷贝一份最新的env
+		eachENV := env.copy() // 每个交易执行组都有一个独立的env环境
+		// 串行组排序
+		SortSerialTX(SerialTxList) // 排完序的SingleTxList
 
-	rouchan1 := make(chan MesReturn, RouNum) // 创建一个带缓冲的通道
+		rouchan1 := make(chan MesReturn, RouNum) // 创建一个带缓冲的通道
 
-	// TODO: 执行串行组交易
-	go w.RouTest(eachENV, SerialTxList, &wg, rouchan1, true)
+		// TODO: 执行串行组交易
+		go w.RouTest(eachENV, SerialTxList, &wg, rouchan1, true)
 
-	wg.Wait() // 串行组执行结束
+		wg.Wait() // 串行组执行结束
 
-	for v := range rouchan1 { // 通过通道接收操作获取函数的返回值
-		env.txs = append(env.txs, v.newTxs...)                    // 上传tx
-		env.receipts = append(env.receipts, v.newReceipt...)      // 上传收据
-		coalescedLogs = append(coalescedLogs, v.coalescedLogs...) // logs
-		if len(rouchan1) == 0 {
-			fmt.Println("channel is end")
-			break
+		for v := range rouchan1 { // 通过通道接收操作获取函数的返回值
+			env.txs = append(env.txs, v.newTxs...)                    // 上传tx
+			env.receipts = append(env.receipts, v.newReceipt...)      // 上传收据
+			coalescedLogs = append(coalescedLogs, v.coalescedLogs...) // logs
+			if len(rouchan1) == 0 {
+				fmt.Println("============ 串行channel is end ============")
+				break
+			}
 		}
+
+		// TODO: 提交最新状态到内存中
+		eachENV.state.Finalise(true)
 	}
 
 	if !w.isRunning() && len(coalescedLogs) > 0 {
@@ -885,9 +891,6 @@ func (w *worker) commitTransactions(env *environment, txs map[int][]*types.Trans
 		}
 		w.pendingLogsFeed.Send(cpy)
 	}
-
-	// TODO: 提交最新状态到内存中
-	eachENV.state.Finalise(true)
 
 	return nil
 }
@@ -934,7 +937,7 @@ func (w *worker) RouTest(env *environment, txs []*types.Transaction, wg *sync.Wa
 		tx := txs[i]
 
 		if tx == nil {
-			fmt.Println("交易为空")
+			fmt.Println("ERROR 交易为空，直接退出当前线程")
 			break // TODO: 为什么要直接退出？
 		}
 
@@ -1101,11 +1104,10 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment) err
 		// txs := make(map[int][]*types.Transaction)
 
 		txs := core.ClassifyTx(env.txs, w.current.signer) // 分组
-		// !!! byd传过来的交易就是空的
 
 		// todo:获取组数
 		var RouNum int = 0
-		for _, _ = range txs {
+		for range txs {
 			RouNum++
 		}
 
@@ -1113,22 +1115,38 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment) err
 		if err := w.commitTransactions(env, txs, interrupt, RouNum); err != nil { // todo:传入组数
 			return err
 		}
+
+		// TODO: commit
+		BlockHash, err := w.current.state.Commit(true)
+		if err != nil {
+			fmt.Println("commit函数出现错误")
+			return err
+		}
+		fmt.Println(BlockHash) // TODO: 后续可能需要修改
 	}
 	if len(remoteTxs) > 0 {
 		// todo：同样的排序方法
 		// txs := types.NewTransactionsByPriceAndNonce(env.signer, remoteTxs, env.header.BaseFee)
 
 		// todo：remoteTxs 需要调用分组方法，类型一样，可以直接调用，然后返回分组，这里我们先模拟一个
-		txs := make(map[int][]*types.Transaction)
+		txs := core.ClassifyTx(env.txs, w.current.signer) // 分组
 
 		// todo:获取组数
 		var RouNum int = 0
-		for _, _ = range txs {
+		for range txs {
 			RouNum++
 		}
 		if err := w.commitTransactions(env, txs, interrupt, RouNum); err != nil {
 			return err
 		} // todo:传入组数
+
+		// TODO: commit
+		BlockHash, err := w.current.state.Commit(true)
+		if err != nil {
+			fmt.Println("commit函数出现错误")
+			return err
+		}
+		fmt.Println(BlockHash) // TODO: 后续可能需要修改
 	}
 	return nil
 }

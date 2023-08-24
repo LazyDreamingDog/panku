@@ -149,16 +149,16 @@ type Message struct {
 	IsParallel bool
 }
 
-// ChangeTxAL TODO: 增加一个修改交易中AL的方法
+// ChangeTxAL 修改交易msg返回值中的AccessList
 func (txmsg *Message) ChangeMsgAL(TAL *vm.JudgeAccessList) bool {
-	txmsg.AccessList = make([]types.AccessTuple, len(txmsg.AccessList))
+	txmsg.AccessList = make([]types.AccessTuple, 1)
 	for key, value := range TAL.Addresses {
 		// key是address，value是对应的slot序号
 		var PartAccessList types.AccessTuple // 每组
 		PartAccessList.Address = key
 		if value != -1 {
 			// 有slot
-			for key1, _ := range TAL.Slots[value] {
+			for key1 := range TAL.Slots[value] {
 				PartAccessList.StorageKeys = append(PartAccessList.StorageKeys, key1)
 			}
 		}
@@ -334,6 +334,9 @@ func (st *StateTransition) preCheck() error {
 // TransitionDb 在这个函数中修改了msg中的AccessList
 func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	// 交易预检查 TODO: 后续可能需要修改
+	// 这里BuyGas了 其实需要打一个Snapshot标记
+	// ! TODO: 需要区分是 无法并行的回滚 还是 交易出错的回滚，后者不需要还钱
+	snapshot := st.state.Snapshot()
 	if err := st.preCheck(); err != nil {
 		return nil, err
 	}
@@ -372,45 +375,60 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 		return nil, fmt.Errorf("%w: code size %v limit %v", ErrMaxInitCodeSizeExceeded, len(msg.Data), params.MaxInitCodeSize)
 	}
 
-	// Execute the preparatory steps for state transition which includes:
-	// - prepare accessList(post-berlin)
-	// - reset transient storage(eip 1153)
+	if len(msg.AccessList) != 2 {
+		fmt.Println("!!!!")
+	}
+
+	// prepare
 	st.state.Prepare(rules, msg.From, st.evm.Context.Coinbase, msg.To, vm.ActivePrecompiles(rules), msg.AccessList)
+	if len(st.state.GetAccessList().Addresses) == 0 {
+		fmt.Println("??!!!???")
+	}
 
 	var (
 		ret            []byte
-		vmerr          error                                 // vm errors do not effect consensus and are therefore not assigned to err
-		TrueAccessList *vm.JudgeAccessList                   // 真实的AccessList
-		IsParallel     bool                = true            // 交易是否可以并行执行
-		IsSerial       bool                = st.msg.IsSerial // 当前交易是否在串行队列中
+		vmerr          error                                         // vm errors do not effect consensus and are therefore not assigned to err
+		TrueAccessList *vm.JudgeAccessList = vm.NewJudgeAccessList() // 真实的AccessList
+		IsParallel     bool                = true                    // 交易是否可以并行执行
+		IsSerial       bool                = st.msg.IsSerial         // 当前交易是否在串行队列中
 	)
 	if contractCreation {
+		// TODO: 合约创建交易
 		ret, _, st.gasRemaining, vmerr, IsParallel = st.evm.Create(sender, msg.Data, st.gasRemaining, msg.Value, TrueAccessList, IsSerial)
 	} else {
-		// Increment the nonce for the next transaction
+		// TODO: 调用合约交易
 		st.state.SetNonce(msg.From, st.state.GetNonce(sender.Address())+1)
 		ret, st.gasRemaining, vmerr, IsParallel = st.evm.Call(sender, st.to(), msg.Data, st.gasRemaining, msg.Value, TrueAccessList, IsSerial)
+		// ? 这里为啥去掉了nonce回滚操作
+		// if IsSerial == false && IsParallel == false {
+		// 	// 并行队列，无法并行执行
+		// 	// st.state.SetNonce(msg.From, st.state.GetNonce(sender.Address())-1)
+		// 	// fmt.Println("noce : ", st.state.GetNonce(sender.Address()))
+		// }
 	}
 
 	// 获取到当前交易能否并行执行
 	st.msg.IsParallel = IsParallel
 
-	// !!! 缺少交易没执行的返回报错
+	// TODO: 交易不报错，并行队列，无法并行执行 => 回滚交易到购买汽油费前的状态
+	if vmerr == nil && (!IsSerial && !IsParallel) {
+		fmt.Println("并行组中交易无法并行执行，快照回滚")
+		st.state.RevertToSnapshot(snapshot)
+		return nil, nil
+	}
 
 	// 当前交易为串行队列时则修改交易msg中的AccessList
 	if IsSerial {
-		judge := st.msg.ChangeMsgAL(TrueAccessList)
+		fmt.Println("当前执行串行队列交易 开始修改AccessList")
+		judge := st.msg.ChangeMsgAL(TrueAccessList) // 修改的是msg中的AccessList
 		if !judge {
-			err = fmt.Errorf("修改msg中的AccessList时出错")
 			fmt.Println("修改msg中的AccessList时出错") // TODO: 后续可以修改出错时的返回方式
 		}
 	}
 
 	if !rules.IsLondon {
-		// Before EIP-3529: refunds were capped to gasUsed / 2
 		st.refundGas(params.RefundQuotient)
 	} else {
-		// After EIP-3529: refunds are capped to gasUsed / 5
 		st.refundGas(params.RefundQuotientEIP3529)
 	}
 	effectiveTip := msg.GasPrice

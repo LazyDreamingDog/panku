@@ -260,31 +260,24 @@ func (b *BlockGen) OffsetTime(seconds int64) {
 	b.header.Difficulty = b.engine.CalcDifficulty(chainreader, b.header.Time, b.parent.Header())
 }
 
-// GenerateChain creates a chain of n blocks. The first block's
-// parent will be the provided parent. db is used to store
-// intermediate states and should contain the parent's state trie.
-//
-// The generator function is called with a new block generator for
-// every block. Any transactions and uncles added to the generator
-// become part of the block. If gen is nil, the blocks will be empty
-// and their coinbase will be the zero address.
-//
-// Blocks created by GenerateChain do not contain valid proof of work
-// values. Inserting them into BlockChain requires use of FakePow or
-// a similar non-validating proof of work implementation.
+// GenerateChain创建了一个n块的链。第一个块将具有给定的父块。db被用于存储中间状态，并且应该包含父块的state trie。
+
+// 生成器函数为每个块调用一个新的块生成器。任何添加到生成器的交易和叔叔都将成为该块的一部分。如果gen为nil，则块将为空，其coinbase将为零地址。
+
+// GenerateChain创建的块不包含有效的PoW值。将它们插入到BlockChain需要使用FakePow或类似的非验证性PoW实现。
 func GenerateChain(config *params.ChainConfig, parent *types.Block, engine consensus.Engine, db ethdb.Database, n int, gen func(int, *BlockGen)) ([]*types.Block, []types.Receipts) {
 	if config == nil {
 		config = params.TestChainConfig
 	}
 	blocks, receipts := make(types.Blocks, n), make([]types.Receipts, n)
 	chainreader := &fakeChainReader{config: config}
+
+	// ? 自定义方法开始
 	genblock := func(i int, parent *types.Block, statedb *state.StateDB) (*types.Block, types.Receipts) {
 		b := &BlockGen{i: i, chain: blocks, parent: parent, statedb: statedb, config: config, engine: engine}
 		b.header = makeHeader(chainreader, parent, statedb, b.engine)
 
-		// Set the difficulty for clique block. The chain maker doesn't have access
-		// to a chain, so the difficulty will be left unset (nil). Set it here to the
-		// correct value.
+		// 设置clique块的难度。该链制造商无法访问链，因此难度将被设置为未设置（nil）。在这里将其设置为正确的值。
 		if b.header.Difficulty == nil {
 			if config.TerminalTotalDifficulty == nil {
 				// Clique chain
@@ -294,7 +287,7 @@ func GenerateChain(config *params.ChainConfig, parent *types.Block, engine conse
 				b.header.Difficulty = big.NewInt(0)
 			}
 		}
-		// Mutate the state and block according to any hard-fork specs
+		// 根据任何硬分叉规范，对状态和块进行变异
 		if daoBlock := config.DAOForkBlock; daoBlock != nil {
 			limit := new(big.Int).Add(daoBlock, params.DAOForkExtraRange)
 			if b.header.Number.Cmp(daoBlock) >= 0 && b.header.Number.Cmp(limit) < 0 {
@@ -306,11 +299,12 @@ func GenerateChain(config *params.ChainConfig, parent *types.Block, engine conse
 		if config.DAOForkSupport && config.DAOForkBlock != nil && config.DAOForkBlock.Cmp(b.header.Number) == 0 {
 			misc.ApplyDAOHardFork(statedb)
 		}
-		// Execute any user modifications to the block
+		// 执行对块的任何用户修改
 		if gen != nil {
 			gen(i, b)
 		}
 		if b.engine != nil {
+			// ! 在这里最终组装成区块 注意 b.txs 是空的
 			block, err := b.engine.FinalizeAndAssemble(chainreader, b.header, statedb, b.txs, b.uncles, b.receipts, b.withdrawals)
 			if err != nil {
 				panic(err)
@@ -332,14 +326,16 @@ func GenerateChain(config *params.ChainConfig, parent *types.Block, engine conse
 		}
 		return nil, nil
 	}
+	// ? 自定义方法结束
+
 	for i := 0; i < n; i++ {
-		// TODO : New方法被重置
 		statedb, err := state.New(parent.Root(), state.NewDatabase(db), nil)
-		// statedb, err := state.New(state.NewDatabase(db), state.NewHistoryDB(db))
 		if err != nil {
 			panic(err)
 		}
-		block, receipt := genblock(i, parent, statedb)
+
+		block, receipt := genblock(i, parent, statedb) // 生成区块
+
 		blocks[i] = block
 		receipts[i] = receipt
 		parent = block
@@ -394,7 +390,7 @@ func makeHeader(chain consensus.ChainReader, parent *types.Block, state *state.S
 
 // makeHeaderChain creates a deterministic chain of headers rooted at parent.
 func makeHeaderChain(chainConfig *params.ChainConfig, parent *types.Header, n int, engine consensus.Engine, db ethdb.Database, seed int) []*types.Header {
-	blocks := makeBlockChain(chainConfig, types.NewBlockWithHeader(parent), n, engine, db, seed)
+	blocks := MakeBlockChain(chainConfig, types.NewBlockWithHeader(parent), n, engine, db, seed)
 	headers := make([]*types.Header, len(blocks))
 	for i, block := range blocks {
 		headers[i] = block.Header()
@@ -402,9 +398,9 @@ func makeHeaderChain(chainConfig *params.ChainConfig, parent *types.Header, n in
 	return headers
 }
 
-// makeHeaderChainWithGenesis creates a deterministic chain of headers from genesis.
-func makeHeaderChainWithGenesis(genesis *Genesis, n int, engine consensus.Engine, seed int) (ethdb.Database, []*types.Header) {
-	db, blocks := makeBlockChainWithGenesis(genesis, n, engine, seed)
+// MakeHeaderChainWithGenesis creates a deterministic chain of headers from genesis.
+func MakeHeaderChainWithGenesis(genesis *Genesis, n int, engine consensus.Engine, seed int) (ethdb.Database, []*types.Header) {
+	db, blocks := MakeBlockChainWithGenesis(genesis, n, engine, seed)
 	headers := make([]*types.Header, len(blocks))
 	for i, block := range blocks {
 		headers[i] = block.Header()
@@ -412,16 +408,16 @@ func makeHeaderChainWithGenesis(genesis *Genesis, n int, engine consensus.Engine
 	return db, headers
 }
 
-// makeBlockChain creates a deterministic chain of blocks rooted at parent.
-func makeBlockChain(chainConfig *params.ChainConfig, parent *types.Block, n int, engine consensus.Engine, db ethdb.Database, seed int) []*types.Block {
+// MakeBlockChain在parent的基础上创建一个确定性的chain
+func MakeBlockChain(chainConfig *params.ChainConfig, parent *types.Block, n int, engine consensus.Engine, db ethdb.Database, seed int) []*types.Block {
 	blocks, _ := GenerateChain(chainConfig, parent, engine, db, n, func(i int, b *BlockGen) {
 		b.SetCoinbase(common.Address{0: byte(seed), 19: byte(i)})
 	})
 	return blocks
 }
 
-// makeBlockChain creates a deterministic chain of blocks from genesis
-func makeBlockChainWithGenesis(genesis *Genesis, n int, engine consensus.Engine, seed int) (ethdb.Database, []*types.Block) {
+// makeBlockChain从genesis创建确定性的chain
+func MakeBlockChainWithGenesis(genesis *Genesis, n int, engine consensus.Engine, seed int) (ethdb.Database, []*types.Block) {
 	db, blocks, _ := GenerateChainWithGenesis(genesis, engine, n, func(i int, b *BlockGen) {
 		b.SetCoinbase(common.Address{0: byte(seed), 19: byte(i)})
 	})

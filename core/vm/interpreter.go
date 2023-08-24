@@ -203,6 +203,10 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool, T
 			}
 			// 消耗汽油并返回错误，如果没有足够的气体可用。 显式设置成本，以便捕获状态延迟方法可以获得适当的成本
 			var dynamicCost uint64
+			// !!!!!!!!!!!!!!!!!!!!!! may error
+			if op == SSTORE {
+				fmt.Println("Let me see AL")
+			}
 			dynamicCost, err = operation.dynamicGas(in.evm, contract, stack, mem, memorySize) // 计算动态内存消耗的汽油费
 			cost += dynamicCost                                                               // for tracing
 			if err != nil || !contract.UseGas(dynamicCost) {                                  // 合约余额不足
@@ -234,11 +238,12 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool, T
 		}
 
 		// TODO: 判断是否有超出的部分，只有超过且并行队列才将交易放到串行队列中
-		result, haveSlot, address, slot := PartTrueAccessList.ConflictDetection(in.evm.StateDB.GetAccessList())
-
-		if !result && !IsSerial {
-			fmt.Println("出错了，将当前交易放到串行队列中", haveSlot, address, slot)
-			IsParallel = false // 当前交易无法并行执行
+		if IsSerial == false { // 只在并行队列判断即可
+			result, _, _, _ := PartTrueAccessList.ConflictDetection(in.evm.StateDB.GetAccessList())
+			// ! fasle => AL发生了冲突，放入串行队列，true => 当前所有AL都符合要求，交易可以并行执行
+			if !result && !IsSerial {
+				IsParallel = false // 当前交易无法并行执行
+			}
 		}
 
 		// 实际执行操作 TODO: 执行操作条件：可以并行执行 IsParallel = true，或者属于串行队列 IsSerial = true

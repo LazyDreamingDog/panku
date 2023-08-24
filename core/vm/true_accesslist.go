@@ -2,6 +2,7 @@ package vm
 
 import (
 	"bytes"
+	"fmt"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state" // stateDB的AccessList
@@ -32,8 +33,8 @@ func UserToStateDBAccessList2(list types.AccessList) interface{} {
 // NewJudgeAccessList 新建一个JudgeAccessList类型对象
 func NewJudgeAccessList() *JudgeAccessList {
 	return &JudgeAccessList{
-		Addresses: nil,
-		Slots:     nil,
+		Addresses: make(map[common.Address]int),
+		Slots:     make([]map[common.Hash]struct{}, 0),
 	}
 }
 
@@ -100,40 +101,44 @@ func (j *JudgeAccessList) GetTrueAccessList(op OpCode, scope *ScopeContext) {
 }
 
 // ConflictDetection 冲突检测函数，检测stateDB中的AccessList和真实的JudgeAccessList之间有没有不一样的部分，如果出现了不一样，就需要将该交易放到串行队列中
-// 返回值：是否发生冲突（false表示AL不一样，true表示没有AL一样），发生冲突项是否有Slot，地址是多少，Slot是多少。注意，后三项返回值只需要在result为false才有意义
+// 返回值：是否发生冲突，发生冲突项是否有Slot，地址是多少，Slot是多少。注意，后三项返回值只需要在result为false才有意义
 func (j *JudgeAccessList) ConflictDetection(stateAL *state.AccessList) (result bool, haveSlot bool, address common.Address, slot []common.Hash) {
 	for key, value := range j.Addresses {
-		// 不存在slot，address相同则发生冲突
+		// 不存在slot，address不相同则发生冲突
 		if value == -1 {
-			result := stateAL.ContainsAddress(key) // false则表示出错，超出了范围
-			if !result {
+			result := stateAL.ContainsAddress(key) // false则表示超出了范围
+			if !result {                           // AL中不包含这个地址，超出范围
+				fmt.Println("ERROR 某个运行访问到的address 不存在于 交易定义的AccessList中")
 				return false, false, key, []common.Hash{}
 			}
 		} else {
-			// 存在slot，address和slot都相同则发生冲突
+			// 存在slot，address和slot都不相同则发生冲突
 			// 先判断地址是否存在，不存在直接报错
-			result := stateAL.ContainsAddress(key) // false则表示出错，超出了范围
-			var temp []common.Hash
-			for key, _ := range j.Slots[value] {
-				temp = append(temp, key) // temp中存储了对应的slot值
+			result := stateAL.ContainsAddress(key) // false则表示超出了范围
+			var tempTrue []common.Hash
+			for key := range j.Slots[value] {
+				tempTrue = append(tempTrue, key) // ! tempTrue中存储了 真实的 对应的slot值
 			}
 			if !result { // 地址不存在
-				return false, true, key, temp
+				fmt.Println("ERROR 某个运行访问到的address 不存在于 交易定义的AccessList中") // ? 其实这个判断可以写道最前面
+				return false, true, key, tempTrue
 			} else {
 				// 地址存在，判断slot
 				// 拿到用户表中对应address的slot
 				var tempUser []common.Hash
-				for key, _ := range stateAL.Slots[stateAL.Addresses[key]] { // stateAL.Addresses[key]是stateDB的AccessList保存地址对应的slot序号
-					tempUser = append(temp, key) // temp中存储了对应的slot值
+				for key := range stateAL.Slots[stateAL.Addresses[key]] { // stateAL.Addresses[key]是stateDB的AccessList保存地址对应的slot序号
+					tempUser = append(tempTrue, key) // ! tempUser中存储了 用户 对应的slot值
 				}
 				// 判断slot是否一样
-				if len(temp) != len(tempUser) { // 长度不一样
-					return false, true, key, temp
+				if len(tempTrue) != len(tempUser) { // 长度不一样
+					fmt.Println("ERROR 用户slot和运行slot数组长度不一样")
+					return false, true, key, tempTrue
 				}
+				// 长度一样，则详细检查
 				for _, a := range tempUser {
 					isSlotEqual := false
-					for i := 0; i < len(temp); i++ {
-						if bytes.Compare(a[:], temp[i][:]) == 0 {
+					for i := 0; i < len(tempTrue); i++ {
+						if bytes.Compare(a[:], tempTrue[i][:]) == 0 {
 							// 存在相等的
 							isSlotEqual = true
 							break
@@ -141,7 +146,7 @@ func (j *JudgeAccessList) ConflictDetection(stateAL *state.AccessList) (result b
 					}
 					if !isSlotEqual {
 						// 不存在相等的slot，访问了AccessList列表之外的地址信息
-						return false, true, key, temp
+						return false, true, key, tempTrue
 					}
 				}
 			}

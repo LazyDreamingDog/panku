@@ -184,7 +184,7 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 				}
 			}
 			err = fmt.Errorf("目标地址不存在")
-			return nil, gas, err, true
+			return nil, gas, err, true // !!! 直接返回
 		}
 		evm.StateDB.CreateAccount(addr) // 创建账户
 	}
@@ -215,6 +215,7 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 		// 不是预编译合约，初始化一个新的合约，并设置EVM要使用的代码
 		code := evm.StateDB.GetCode(addr)
 		if len(code) == 0 {
+			IsParallel = true   // 纯转账的交易一定能并行执行
 			ret, err = nil, nil // 合约没有代码则直接返回，油费没有变化
 		} else {
 			addrCopy := addr
@@ -230,6 +231,7 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 	// 当EVM返回错误或设置上面的创建代码时，我们将恢复到快照并消耗剩余的gas
 	// 此外，当我们在homestead时，这也会计算代码存储气体错误。
 	if err != nil {
+		fmt.Println("ERROR 交易执行出错，交易回滚")
 		evm.StateDB.RevertToSnapshot(snapshot)
 		if err != ErrExecutionReverted {
 			gas = 0
@@ -243,10 +245,10 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 	}
 
 	// TODO: 新增一种快照回滚条件，当在并行组执行交易时，该交易无法并行执行则也需要进行快照回滚
-	if err == nil && IsSerial == false && IsParallel == false {
-		fmt.Println("并行组中交易无法并行执行")
-		evm.StateDB.RevertToSnapshot(snapshot) // 快照回滚
-	}
+	// if err == nil && IsSerial == false && IsParallel == false {
+	// 	fmt.Println("并行组中交易无法并行执行，快照回滚")
+	// 	evm.StateDB.RevertToSnapshot(snapshot) // 快照回滚
+	// }
 
 	return ret, gas, err, IsParallel
 }
@@ -304,11 +306,11 @@ func (evm *EVM) CallCode(caller ContractRef, addr common.Address, input []byte, 
 		}
 	}
 
-	// TODO: 新增一种快照回滚条件，当在并行组执行交易时，该交易无法并行执行则也需要进行快照回滚
-	if err == nil && IsSerial == false && IsParallel == false {
-		fmt.Println("并行组中交易无法并行执行")
-		evm.StateDB.RevertToSnapshot(snapshot) // 快照回滚
-	}
+	// // TODO: 新增一种快照回滚条件，当在并行组执行交易时，该交易无法并行执行则也需要进行快照回滚
+	// if err == nil && IsSerial == false && IsParallel == false {
+	// 	fmt.Println("并行组中交易无法并行执行，快照回滚")
+	// 	evm.StateDB.RevertToSnapshot(snapshot) // 快照回滚
+	// }
 
 	return ret, gas, err, IsParallel
 }
@@ -357,11 +359,11 @@ func (evm *EVM) DelegateCall(caller ContractRef, addr common.Address, input []by
 		}
 	}
 
-	// TODO: 新增一种快照回滚条件，当在并行组执行交易时，该交易无法并行执行则也需要进行快照回滚
-	if err == nil && IsSerial == false && IsParallel == false {
-		fmt.Println("并行组中交易无法并行执行")
-		evm.StateDB.RevertToSnapshot(snapshot) // 快照回滚
-	}
+	// // TODO: 新增一种快照回滚条件，当在并行组执行交易时，该交易无法并行执行则也需要进行快照回滚
+	// if err == nil && IsSerial == false && IsParallel == false {
+	// 	fmt.Println("并行组中交易无法并行执行，快照回滚")
+	// 	evm.StateDB.RevertToSnapshot(snapshot) // 快照回滚
+	// }
 
 	return ret, gas, err, IsParallel
 }
@@ -420,11 +422,11 @@ func (evm *EVM) StaticCall(caller ContractRef, addr common.Address, input []byte
 		}
 	}
 
-	// TODO: 新增一种快照回滚条件，当在并行组执行交易时，该交易无法并行执行则也需要进行快照回滚
-	if err == nil && IsSerial == false && IsParallel == false {
-		fmt.Println("并行组中交易无法并行执行")
-		evm.StateDB.RevertToSnapshot(snapshot) // 快照回滚
-	}
+	// // TODO: 新增一种快照回滚条件，当在并行组执行交易时，该交易无法并行执行则也需要进行快照回滚
+	// if err == nil && IsSerial == false && IsParallel == false {
+	// 	fmt.Println("并行组中交易无法并行执行，快照回滚")
+	// 	evm.StateDB.RevertToSnapshot(snapshot) // 快照回滚
+	// }
 
 	return ret, gas, err, IsParallel
 }
@@ -535,11 +537,11 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 		}
 	}
 
-	// TODO: 新增一种快照回滚条件，当在并行组执行交易时，该交易无法并行执行 则也需要进行快照回滚
-	if err == nil && IsSerial == false && IsParallel == false {
-		fmt.Println("并行组中交易无法并行执行")
-		evm.StateDB.RevertToSnapshot(snapshot) // 快照回滚
-	}
+	// // TODO: 新增一种快照回滚条件，当在并行组执行交易时，该交易无法并行执行 则也需要进行快照回滚
+	// if err == nil && IsSerial == false && IsParallel == false {
+	// 	fmt.Println("并行组中交易无法并行执行，快照回滚")
+	// 	evm.StateDB.RevertToSnapshot(snapshot) // 快照回滚
+	// }
 
 	if evm.Config.Tracer != nil {
 		if evm.depth == 0 {

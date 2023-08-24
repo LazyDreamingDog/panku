@@ -41,8 +41,8 @@ type journal struct {
 }
 
 // newJournal creates a new initialized journal.
-func newJournal() *journal {
-	return &journal{
+func newJournal() journal {
+	return journal{
 		dirties: make(map[common.Address]int),
 	}
 }

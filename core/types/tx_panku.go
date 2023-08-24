@@ -91,7 +91,7 @@ func (tx *PankuTx) copy() TxData {
 }
 
 // accessors for innerTx.
-func (tx *PankuTx) txType() byte                 { return DynamicFeeTxType }
+func (tx *PankuTx) txType() byte                 { return PankuTxType }
 func (tx *PankuTx) chainID() *big.Int            { return tx.ChainID }
 func (tx *PankuTx) accessList() AccessList       { return tx.AccessList }
 func (tx *PankuTx) strictAccessList() AccessList { return tx.StrictAccessList }
@@ -124,4 +124,35 @@ func (tx *PankuTx) rawSignatureValues() (v, r, s *big.Int) {
 
 func (tx *PankuTx) setSignatureValues(chainID, v, r, s *big.Int) {
 	tx.ChainID, tx.V, tx.R, tx.S = chainID, v, r, s
+}
+
+// NewTransaction creates an unsigned legacy transaction.
+// Deprecated: use NewTx instead.
+func NewPankuTransaction(nonce uint64, to common.Address, amount *big.Int, gasLimit uint64, gasPrice *big.Int, data []byte, gasFee *big.Int, tip *big.Int, al AccessList) *Transaction {
+	return NewTx(&PankuTx{
+		ChainID:    big.NewInt(1),
+		Nonce:      nonce,
+		To:         &to,
+		Value:      amount,
+		Gas:        gasLimit,
+		Data:       data,
+		AccessList: al,
+		GasTipCap:  tip,
+		GasFeeCap:  gasFee,
+	})
+}
+
+// NewContractCreation creates an unsigned legacy transaction.
+// Deprecated: use NewTx instead.
+func NewPankuContractCreation(nonce uint64, amount *big.Int, gasLimit uint64, gasPrice *big.Int, data []byte, gasFee *big.Int, tip *big.Int, al AccessList) *Transaction {
+	return NewTx(&PankuTx{
+		ChainID:    big.NewInt(1),
+		Nonce:      nonce,
+		Value:      amount,
+		Gas:        gasLimit,
+		Data:       data,
+		AccessList: al,
+		GasTipCap:  tip,
+		GasFeeCap:  gasFee,
+	})
 }

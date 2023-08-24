@@ -91,8 +91,7 @@ type Engine interface {
 	Finalize(chain ChainHeaderReader, header *types.Header, state *state.StateDB, txs []*types.Transaction,
 		uncles []*types.Header, withdrawals []*types.Withdrawal)
 
-	// FinalizeAndAssemble runs any post-transaction state modifications (e.g. block
-	// rewards or process withdrawals) and assembles the final block.
+	// FinalizeAndAssemble运行任何事务后的状态修改（例如，区块奖励或处理提币）并组装最终的区块
 	//
 	// Note: The block header and state database might be updated to reflect any
 	// consensus rules that happen at finalization (e.g. block rewards).

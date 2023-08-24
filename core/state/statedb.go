@@ -112,7 +112,7 @@ type StateDB struct {
 
 	// Journal of state modifications. This is the backbone of
 	// Snapshot and RevertToSnapshot.
-	journal        *journal
+	journal        journal
 	validRevisions []revision
 	nextRevisionId int
 
@@ -723,7 +723,7 @@ func (s *StateDB) ForEachStorage(addr common.Address, cb func(key, value common.
 	return nil
 }
 
-// Copy creates a deep, independent copy of the state.
+// Copy creates a deep, independent  of the state.
 // Snapshots of the copied state cannot be applied to the copy.
 func (s *StateDB) Copy() *StateDB {
 	// Copy all the basic fields, initialize the memory ones
@@ -1212,4 +1212,35 @@ func (s *StateDB) convertAccountSet(set map[common.Address]struct{}) map[common.
 
 func (s *StateDB) GetAccessList() *AccessList {
 	return s.AccessList
+}
+
+func (s *StateDB) GetPendingObj() (map[common.Address]struct{}, map[common.Address]*stateObject) {
+	so := make(map[common.Address]*stateObject)
+	for key, _ := range s.stateObjectsPending {
+		so[key] = s.stateObjects[key]
+	}
+	return s.stateObjectsPending, so
+}
+
+func (s *StateDB) SetPendingObj(spo map[common.Address]struct{}) {
+	for key, _ := range spo {
+		s.stateObjectsPending[key] = spo[key]
+	}
+}
+
+func (s *StateDB) UpdateStateObj(so map[common.Address]*stateObject) {
+	for key, _ := range so {
+		s.stateObjects[key] = so[key]
+	}
+}
+
+func (s *StateDB) GetStateObj() map[common.Address]*stateObject {
+	return s.stateObjects
+}
+
+// Panku系统测试用
+func (s *StateDB) ClearJournal() {
+	if len(s.journal.entries) > 0 {
+		s.journal = newJournal()
+	}
 }
